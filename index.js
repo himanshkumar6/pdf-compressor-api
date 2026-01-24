@@ -6,6 +6,7 @@ import { exec } from "child_process";
 
 const app = express();
 
+/* -------------------- CORS (BROWSER SAFE) -------------------- */
 app.use(
   cors({
     origin: "*",
@@ -15,62 +16,91 @@ app.use(
   })
 );
 
-// ensure folders
+/* -------------------- KEEP CONNECTION ALIVE -------------------- */
+app.use((req, res, next) => {
+  res.setHeader("Connection", "keep-alive");
+  next();
+});
+
+/* -------------------- FOLDERS -------------------- */
 if (!fs.existsSync("uploads")) fs.mkdirSync("uploads");
 if (!fs.existsSync("compressed")) fs.mkdirSync("compressed");
 
-// multer
+/* -------------------- MULTER -------------------- */
 const upload = multer({
   dest: "uploads/",
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype !== "application/pdf") {
+      return cb(new Error("Only PDF files allowed"));
+    }
+    cb(null, true);
+  },
 });
 
+/* -------------------- HEALTH CHECK -------------------- */
 app.get("/", (req, res) => {
   res.send("PDF Compress API is running 🚀");
 });
 
-// helper: choose GS profile
+/* -------------------- PROFILE SELECTOR -------------------- */
 function getProfile(size) {
   if (size === "200") return "/screen";
   if (size === "300") return "/ebook";
   if (size === "500") return "/printer";
-  return "/ebook"; // default
+  return "/ebook";
 }
 
+/* -------------------- COMPRESS ROUTE -------------------- */
 app.post("/compress", upload.single("pdf"), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "No PDF uploaded" });
-  }
-
-  const targetSize = req.body.size; // 200 | 300 | 500
-  const profile = getProfile(targetSize);
-
-  const inputPath = req.file.path;
-  const outputPath = `compressed/compressed-${Date.now()}.pdf`;
-
-  const command = `
-    gs -sDEVICE=pdfwrite \
-    -dCompatibilityLevel=1.4 \
-    -dPDFSETTINGS=${profile} \
-    -dNOPAUSE -dQUIET -dBATCH \
-    -sOutputFile=${outputPath} ${inputPath}
-  `;
-
-  exec(command, (error) => {
-    if (error) {
-      console.error(error);
-      return res.status(500).json({ error: "Compression failed" });
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No PDF uploaded" });
     }
 
-    // send result
-    res.download(outputPath, "compressed.pdf", () => {
-      fs.unlink(inputPath, () => { });
-      fs.unlink(outputPath, () => { });
+    const profile = getProfile(req.body.size);
+    const inputPath = req.file.path;
+    const outputPath = `compressed/compressed-${Date.now()}.pdf`;
+
+    const command = `
+      gs -sDEVICE=pdfwrite \
+      -dCompatibilityLevel=1.4 \
+      -dPDFSETTINGS=${profile} \
+      -dNOPAUSE -dQUIET -dBATCH \
+      -sOutputFile=${outputPath} ${inputPath}
+    `;
+
+    exec(command, { timeout: 60000 }, (error) => {
+      if (error) {
+        console.error("Ghostscript error:", error);
+        cleanup(inputPath, outputPath);
+        return res.status(500).json({ error: "Compression failed" });
+      }
+
+      // calculate compressed size
+      const stats = fs.statSync(outputPath);
+      const sizeKB = Math.round(stats.size / 1024);
+
+      // IMPORTANT: expose size to frontend
+      res.setHeader("X-Compressed-Size-KB", sizeKB);
+
+      res.download(outputPath, "compressed.pdf", () => {
+        cleanup(inputPath, outputPath);
+      });
     });
-  });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
 });
 
-// Railway compatible port
+/* -------------------- CLEANUP HELPER -------------------- */
+function cleanup(input, output) {
+  fs.unlink(input, () => { });
+  fs.unlink(output, () => { });
+}
+
+/* -------------------- PORT -------------------- */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
