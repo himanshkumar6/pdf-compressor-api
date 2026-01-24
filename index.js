@@ -6,7 +6,7 @@ import { exec } from "child_process";
 
 const app = express();
 
-/* -------------------- CORS (BROWSER SAFE) -------------------- */
+/* -------------------- CORS -------------------- */
 app.use(
   cors({
     origin: "*",
@@ -16,7 +16,7 @@ app.use(
   })
 );
 
-/* -------------------- KEEP CONNECTION ALIVE -------------------- */
+/* -------------------- KEEP ALIVE -------------------- */
 app.use((req, res, next) => {
   res.setHeader("Connection", "keep-alive");
   next();
@@ -38,63 +38,71 @@ const upload = multer({
   },
 });
 
-/* -------------------- HEALTH CHECK -------------------- */
+/* -------------------- HEALTH -------------------- */
 app.get("/", (req, res) => {
   res.send("PDF Compress API is running 🚀");
 });
 
-/* -------------------- PROFILE SELECTOR -------------------- */
-function getProfile(size) {
-  if (size === "200") return "/screen";
-  if (size === "300") return "/ebook";
-  if (size === "500") return "/printer";
-  return "/ebook";
-}
-
 /* -------------------- COMPRESS ROUTE -------------------- */
 app.post("/compress", upload.single("pdf"), (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No PDF uploaded" });
-    }
+  if (!req.file) {
+    return res.status(400).json({ error: "No PDF uploaded" });
+  }
 
-    const profile = getProfile(req.body.size);
-    const inputPath = req.file.path;
-    const outputPath = `compressed/compressed-${Date.now()}.pdf`;
+  const TARGET_KB = parseInt(req.body.size, 10);
+  const inputPath = req.file.path;
+  const outputPath = `compressed/compressed-${Date.now()}.pdf`;
 
-    const command = `
+  // Compression levels (soft → aggressive)
+  const profiles = ["/printer", "/ebook", "/screen"];
+
+  // Decide starting profile
+  let index = 1; // default ebook
+  if (TARGET_KB <= 200) index = 2;
+  else if (TARGET_KB <= 300) index = 1;
+  else index = 0;
+
+  function compress(profile, callback) {
+    const cmd = `
       gs -sDEVICE=pdfwrite \
       -dCompatibilityLevel=1.4 \
       -dPDFSETTINGS=${profile} \
       -dNOPAUSE -dQUIET -dBATCH \
       -sOutputFile=${outputPath} ${inputPath}
     `;
+    exec(cmd, { timeout: 60000 }, callback);
+  }
 
-    exec(command, { timeout: 60000 }, (error) => {
-      if (error) {
-        console.error("Ghostscript error:", error);
+  function tryCompress() {
+    const profile = profiles[index];
+
+    compress(profile, (err) => {
+      if (err) {
+        console.error("Ghostscript error:", err);
         cleanup(inputPath, outputPath);
         return res.status(500).json({ error: "Compression failed" });
       }
 
-      // calculate compressed size
-      const stats = fs.statSync(outputPath);
-      const sizeKB = Math.round(stats.size / 1024);
+      const sizeKB = Math.round(fs.statSync(outputPath).size / 1024);
 
-      // IMPORTANT: expose size to frontend
-      res.setHeader("X-Compressed-Size-KB", sizeKB);
+      // ✅ SUCCESS: under target OR max aggressive reached
+      if (sizeKB <= TARGET_KB || index === profiles.length - 1) {
+        res.setHeader("X-Compressed-Size-KB", sizeKB);
+        return res.download(outputPath, "compressed.pdf", () => {
+          cleanup(inputPath, outputPath);
+        });
+      }
 
-      res.download(outputPath, "compressed.pdf", () => {
-        cleanup(inputPath, outputPath);
-      });
+      // 🔁 Retry with more aggressive compression
+      index++;
+      tryCompress();
     });
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: "Server error" });
   }
+
+  tryCompress();
 });
 
-/* -------------------- CLEANUP HELPER -------------------- */
+/* -------------------- CLEANUP -------------------- */
 function cleanup(input, output) {
   fs.unlink(input, () => { });
   fs.unlink(output, () => { });
