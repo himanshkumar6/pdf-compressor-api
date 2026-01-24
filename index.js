@@ -15,11 +15,6 @@ app.use(
   })
 );
 
-// VERY IMPORTANT: handle preflight
-app.options("*", (req, res) => {
-  res.sendStatus(200);
-});
-
 // ensure folders
 if (!fs.existsSync("uploads")) fs.mkdirSync("uploads");
 if (!fs.existsSync("compressed")) fs.mkdirSync("compressed");
