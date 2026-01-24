@@ -5,7 +5,15 @@ import fs from "fs";
 import { exec } from "child_process";
 
 const app = express();
-app.use(cors());
+
+app.use(
+  cors({
+    origin: "*",
+    methods: ["GET", "POST"],
+    allowedHeaders: ["Content-Type"],
+    exposedHeaders: ["X-Compressed-Size-KB"],
+  })
+);
 
 // ensure folders
 if (!fs.existsSync("uploads")) fs.mkdirSync("uploads");
