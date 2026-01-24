@@ -9,11 +9,16 @@ const app = express();
 app.use(
   cors({
     origin: "*",
-    methods: ["GET", "POST"],
+    methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type"],
     exposedHeaders: ["X-Compressed-Size-KB"],
   })
 );
+
+// VERY IMPORTANT: handle preflight
+app.options("*", (req, res) => {
+  res.sendStatus(200);
+});
 
 // ensure folders
 if (!fs.existsSync("uploads")) fs.mkdirSync("uploads");
